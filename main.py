@@ -12,6 +12,7 @@ from transformers import (
     AdamW,
     AlbertConfig,
     AlbertTokenizer,
+    AlbertForQuestionAnswering,
     get_linear_schedule_with_warmup,
 )
 from transformers.data.metrics.squad_metrics import (
@@ -20,8 +21,8 @@ from transformers.data.metrics.squad_metrics import (
 )
 from transformers.data.processors.squad import SquadResult
 
-from args import parse_args
 from albert import Albert
+from args import parse_args
 
 try:
     from torch.utils.tensorboard import SummaryWriter
@@ -32,9 +33,9 @@ from utils import set_seed, load_and_cache_examples, to_list
 
 logger = logging.getLogger(__name__)
 
-# [A] replace with our model
 MODEL_CLASSES = {
     "albert": (AlbertConfig, Albert, AlbertTokenizer),
+    "albertbase": (AlbertConfig, AlbertForQuestionAnswering, AlbertTokenizer),
 }
 
 

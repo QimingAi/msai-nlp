@@ -405,25 +405,23 @@ class AlbertBaseModel(AlbertPreTrainedModel):
 
 
 class Albert(AlbertPreTrainedModel):
-    """This is our final model with co-attention.
-
+    """This is our final albert-based model with co-attention blocks.
     """
 
     def __init__(self, config):
         super().__init__(config)
         self.num_labels = config.num_labels
-
         self.albert = AlbertBaseModel(config)
         self.qa_outputs = nn.Linear(config.hidden_size, config.num_labels)
 
-        # initialize the albert with pre-trained weights
+        # initialize albert with pre-trained weights
         self.init_weights()
 
-        self.coattens = nn.ModuleList([CoAttentionNetwork(config.hidden_size, config.num_hidden_layers) for _ in
-                                       range(6)])
+        # uncomment the code below for multi-layer experiments.
+        # self.coattens = nn.ModuleList([CoAttentionNetwork(config.hidden_size, 1) for _ in
+        #                                range(2)])
 
-        # self.coatten = CoAttentionNetwork(config.hidden_size, config.num_hidden_layers)
-
+        self.coatten = CoAttentionNetwork(config.hidden_size, 1)
         self.coattn_fc = nn.Linear(2 * config.hidden_size, config.num_labels)
 
     def forward(
@@ -445,16 +443,6 @@ class Albert(AlbertPreTrainedModel):
         # head_mask:        None
         # inputs_embeds:    None
 
-        # with torch.no_grad():
-        #     outputs = self.albert(
-        #         input_ids=input_ids,
-        #         attention_mask=attention_mask,
-        #         token_type_ids=token_type_ids,
-        #         position_ids=position_ids,
-        #         head_mask=head_mask,
-        #         inputs_embeds=inputs_embeds,
-        #     )
-
         outputs = self.albert(
             input_ids=input_ids,
             attention_mask=attention_mask,
@@ -472,16 +460,17 @@ class Albert(AlbertPreTrainedModel):
         question_hidden_states = original_hidden_states * (attention_mask - token_type_ids).unsqueeze(-1)
         context_hidden_states = original_hidden_states * token_type_ids.unsqueeze(-1)
 
-        for coatten in self.coattens:
-            question_hidden_states, context_hidden_states = coatten(question_hidden_states,
-                                                                    context_hidden_states,
-                                                                    question_mask,
-                                                                    context_mask)
+        # uncomment the code below for multi-layer experiments.
+        # for coatten in self.coattens:
+        #     question_hidden_states, context_hidden_states = coatten(question_hidden_states,
+        #                                                             context_hidden_states,
+        #                                                             question_mask,
+        #                                                             context_mask)
 
-        # question_hidden_states, context_hidden_states = self.coatten(question_hidden_states,
-        #                                                              context_hidden_states,
-        #                                                              question_mask,
-        #                                                              context_mask)
+        question_hidden_states, context_hidden_states = self.coatten(question_hidden_states,
+                                                                     context_hidden_states,
+                                                                     question_mask,
+                                                                     context_mask)
 
         hidden_states = question_hidden_states * (attention_mask - token_type_ids).unsqueeze(
             -1) + context_hidden_states * token_type_ids.unsqueeze(-1)
@@ -515,12 +504,20 @@ class Albert(AlbertPreTrainedModel):
 
 
 class CoAttentionNetwork(nn.Module):
+    """Co-attention module.
+
+    This is the co-attention block we used in our multi-layer experiments.
     """
 
-    """
-    def __init__(self, hidden_size, num_attn, dropout=0.3, dropattn=0):
+    def __init__(self, hidden_size, num_attn, dropout=0.3):
+        """
+
+        :param hidden_size: dimension of the hidden states
+        :param num_attn: for multi-head attention
+        :param dropout: dropout in fc-layer
+        """
         super(CoAttentionNetwork, self).__init__()
-        self.coattn = CoAttentionLayer(hidden_size, num_attn, dropattn)
+        self.coattn = CoAttentionLayer(hidden_size, num_attn)
 
         self.linears = nn.ModuleList([
             nn.Sequential(
@@ -543,42 +540,40 @@ class CoAttentionNetwork(nn.Module):
 
 
 class CoAttentionLayer(nn.Module):
+    """Co-attention Layer.
     """
 
-    """
-    def __init__(self, dim, num_attn, dropout):
+    def __init__(self, dim, num_attn):
+        """
+
+        :param dim: dimension of the input tensor
+        :param num_attn: for multi-head attention
+        """
         super(CoAttentionLayer, self).__init__()
         self.dim = dim
         self.linears = nn.ModuleList([nn.Linear(dim, dim, bias=False),
                                       nn.Linear(dim, dim, bias=False)])
-
         self.d_k = dim // num_attn
         self.h = num_attn
-        self.attn = None
-        self.dropouts = nn.ModuleList([nn.Dropout(p=dropout) for _ in range(2)])
 
     def forward(self, question, context, q_mask=None, c_mask=None):
         batch = question.size(0)
         question, context = [l(x).view(batch, -1, self.h, self.d_k).transpose(1, 2)
                              for l, x in zip(self.linears, (question, context))]
 
-        question_, attn_q = self.qkv(context, question, question, mask=q_mask, dropout=self.dropouts[0])
-        question_ = question_.transpose(1, 2).contiguous()
-        question_ = torch.reshape(question_, (batch, -1, self.dim))
-        context_, attn_c = self.qkv(question, context, context, mask=c_mask, dropout=self.dropouts[1])
+        context_, attn_c = self.qkv(context, question, question, mask=q_mask)
         context_ = context_.transpose(1, 2).contiguous()
         context_ = torch.reshape(context_, (batch, -1, self.dim))
+        question_, attn_q = self.qkv(question, context, context, mask=c_mask)
+        question_ = question_.transpose(1, 2).contiguous()
+        question_ = torch.reshape(question_, (batch, -1, self.dim))
         return question_, context_
 
     @staticmethod
-    def qkv(query, key, value, mask=None, dropout=None):
+    def qkv(query, key, value, mask=None):
         d_k = query.size(-1)
         scores = torch.matmul(query, key.transpose(-2, -1)) / math.sqrt(d_k)
         if mask is not None:
             scores.data.masked_fill_(mask.unsqueeze(1).unsqueeze(-1).eq(0), -65504.0)
-
         p_attn = nn.functional.softmax(scores, dim=-1)
-        if dropout is not None:
-            p_attn = dropout(p_attn)
-
         return torch.matmul(p_attn, value), p_attn
